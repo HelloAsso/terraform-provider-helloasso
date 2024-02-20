@@ -3,7 +3,7 @@ module github.com/hashicorp/terraform-provider-helloasso
 go 1.18
 
 require (
-	github.com/AzureAD/microsoft-authentication-library-for-go v0.8.1
+	github.com/AzureAD/microsoft-authentication-library-for-go v1.2.2
 	github.com/hashicorp/terraform-plugin-docs v0.14.1
 	github.com/hashicorp/terraform-plugin-framework v1.1.1
 	github.com/hashicorp/terraform-plugin-go v0.14.3
@@ -18,7 +18,7 @@ require (
 	github.com/armon/go-radix v1.0.0 // indirect
 	github.com/bgentry/speakeasy v0.1.0 // indirect
 	github.com/fatih/color v1.13.0 // indirect
-	github.com/golang-jwt/jwt/v4 v4.4.3 // indirect
+	github.com/golang-jwt/jwt/v5 v5.0.0 // indirect
 	github.com/golang/protobuf v1.5.3 // indirect
 	github.com/google/uuid v1.3.0 // indirect
 	github.com/hashicorp/errwrap v1.1.0 // indirect

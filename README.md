@@ -60,3 +60,20 @@ If you do not have terraform installed, you can remove the formatting command, b
 
 Run the docs generation tool, check its repository for more information on how it works and how docs can be customized.
 `go:generate go run github.com/hashicorp/terraform-plugin-docs/cmd/tfplugindocs`
+
+## Debugging the provider locally
+
+Follow https://developer.hashicorp.com/terraform/tutorials/providers-plugin-framework/providers-plugin-framework-provider
+
+Once the provider binary installed locally on your machine, launch it with `-debug`
+
+```
+terraform-provider-helloasso -debug
+```
+
+It will start and display an env variable: `TF_REATTACH_PROVIDERS='{....}'`
+
+Start your terraform command by providing this env var:
+```
+TF_REATTACH_PROVIDERS='{....}' terraform plan
+```

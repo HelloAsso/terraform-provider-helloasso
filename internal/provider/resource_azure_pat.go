@@ -12,20 +12,25 @@ import (
 	"github.com/hashicorp/terraform-plugin-log/tflog"
 	"github.com/hashicorp/terraform-provider-helloasso/internal/modifiers"
 
+	"os/exec"
+
 	"github.com/AzureAD/microsoft-authentication-library-for-go/apps/confidential"
 	"github.com/AzureAD/microsoft-authentication-library-for-go/apps/public"
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/boolplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/int64planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 )
 
 const (
-	AZ_SCOPE_DEVOPS  string = "499b84ac-1321-427f-aa17-267ca6975798/.default"
-	PAT_API_VERSION  string = "api-version=7.0-preview.1"
-	APP_API_ENDPOINT string = "https://graph.microsoft.com/v1.0/applications"
+	AZ_SCOPE_DEVOPS                    string = "499b84ac-1321-427f-aa17-267ca6975798/.default"
+	PAT_API_VERSION                    string = "api-version=7.0-preview.1"
+	APP_API_ENDPOINT                   string = "https://graph.microsoft.com/v1.0/applications"
+	SWITCH_PRIVATE_PUBLIC_DEFAULT_WAIT int64  = 15
 )
 
 // Ensure provider defined types fully satisfy framework interfaces
@@ -52,6 +57,8 @@ type AzurePatResourceModel struct {
 	AzureDevopsPatEndpoint  types.String `tfsdk:"azure_devops_pat_endpoint"`
 	AzureDevopsPatScopes    types.String `tfsdk:"azure_devops_pat_scopes"`
 	IsAppRegistrationPublic types.Bool   `tfsdk:"is_app_registration_public"`
+	SwitchPrivatePublic     types.Bool   `tfsdk:"az_cli_switch_private_app_public"`
+	SwitchPrivatePublicWait types.Int64  `tfsdk:"az_cli_switch_private_app_public_wait_delay"`
 	RotateWhenChanged       types.String `tfsdk:"rotate_when_changed"`
 	Pat                     types.String `tfsdk:"pat"`
 	PatID                   types.String `tfsdk:"pat_id"`
@@ -125,6 +132,19 @@ func (r *AzurePatResource) Schema(ctx context.Context, req resource.SchemaReques
 					modifiers.DefaultBool(true),
 				},
 			},
+			"az_cli_switch_private_app_public": schema.BoolAttribute{
+				MarkdownDescription: `This is a dirty workaround to be able to use confidential app with public flow
+										to be used with 'is_app_registration_public = true'
+										if true, we will call local AZ CLI to switch app public while getting token, after put back to private
+										default: false`,
+				Optional:      true,
+				PlanModifiers: []planmodifier.Bool{boolplanmodifier.UseStateForUnknown()},
+			},
+			"az_cli_switch_private_app_public_wait_delay": schema.Int64Attribute{
+				MarkdownDescription: "When 'az_cli_switch_private_app_public = true' delay to wait for change propagation before acquiring token, (default: 15)",
+				Optional:            true,
+				PlanModifiers:       []planmodifier.Int64{int64planmodifier.UseStateForUnknown()},
+			},
 			"app_client_secret": schema.StringAttribute{
 				MarkdownDescription: "WIP (not supported): Client secret of registered app (to be set if is_app_registration_public=false)",
 				Optional:            true,
@@ -141,18 +161,43 @@ func (r *AzurePatResource) Schema(ctx context.Context, req resource.SchemaReques
 				MarkdownDescription: "PAT token",
 				Computed:            true,
 				Sensitive:           true,
+				PlanModifiers:       []planmodifier.String{stringplanmodifier.UseStateForUnknown()},
 			},
 			"pat_id": schema.StringAttribute{
 				MarkdownDescription: "PAT ID",
 				Computed:            true,
+				PlanModifiers:       []planmodifier.String{stringplanmodifier.UseStateForUnknown()},
 			},
 		},
 	}
 }
 
-func (r *AzurePatResource) getPublicAdToken(ctx context.Context, appID string, azureUser string, azurePassword string, authority string, apiScope string) (string, error) {
+func (r *AzurePatResource) getPublicAdToken(ctx context.Context, appID string, azureUser string, azurePassword string, authority string, apiScope string, switchPrivatePublic bool, switchPrivatePublicWait int64) (string, error) {
 
 	tflog.Info(ctx, "getPublicAdToken")
+	// We add a workaround here for more security: make app public only while we get the token
+	// Since there is no AcquireTokenByUsernamePassword for Confidential App yet
+	azCmd := []string{"az", "ad", "app", "update", "--id", appID, "--is-fallback-public-client"}
+	if switchPrivatePublic {
+		appPublic := append(azCmd, "true")
+
+		tflog.Info(ctx, "Workaround : Make app public while getting token")
+		cmd := exec.Command(appPublic[0], appPublic[1:]...)
+		_, err := cmd.Output()
+
+		if err != nil {
+			tflog.Info(ctx, err.Error())
+		}
+
+		if switchPrivatePublicWait == 0 {
+			switchPrivatePublicWait = SWITCH_PRIVATE_PUBLIC_DEFAULT_WAIT
+		}
+		tflog.Info(ctx, fmt.Sprintf("Workaround : sleep %d sec to take effect", switchPrivatePublicWait))
+		time.Sleep(time.Duration(switchPrivatePublicWait) * time.Second)
+
+	}
+
+	// Now get token using public app
 	app, err := public.New(appID, public.WithAuthority(authority))
 
 	if err != nil {
@@ -164,6 +209,17 @@ func (r *AzurePatResource) getPublicAdToken(ctx context.Context, appID string, a
 		return "", err
 	}
 
+	// We got the token , make it back to private
+	if switchPrivatePublic {
+		appPrivate := append(azCmd, "false")
+		tflog.Info(ctx, "Workaround : Make app back to private now we have the token")
+		cmd := exec.Command(appPrivate[0], appPrivate[1:]...)
+		_, err = cmd.Output()
+
+		if err != nil {
+			tflog.Info(ctx, err.Error())
+		}
+	}
 	return result.AccessToken, nil
 }
 
@@ -175,7 +231,7 @@ func (r *AzurePatResource) getConfidentialAdToken(ctx context.Context, appID str
 	if err != nil {
 		return "", err
 	}
-	confidentialClientApp, err := confidential.New(appID, cred, confidential.WithAuthority(authority))
+	confidentialClientApp, err := confidential.New(authority, appID, cred)
 
 	if err != nil {
 		return "", err
@@ -211,7 +267,7 @@ func (r *AzurePatResource) Configure(ctx context.Context, req resource.Configure
 	r.client = client
 }
 
-func (r *AzurePatResource) deletePat(ctx context.Context, patID string, azureDevopsPatEndpoint string, token string) error {
+func (r *AzurePatResource) deletePat(_ context.Context, patID string, azureDevopsPatEndpoint string, token string) error {
 
 	client := &http.Client{}
 	delete_req, _ := http.NewRequest(http.MethodDelete, azureDevopsPatEndpoint+"?"+PAT_API_VERSION+"&authorizationId="+patID, nil)
@@ -233,7 +289,7 @@ func (r *AzurePatResource) deletePat(ctx context.Context, patID string, azureDev
 	return nil
 }
 
-func (r *AzurePatResource) createPat(ctx context.Context, patName string, patScopes string, azureDevopsPatEndpoint string, token string) (*PatCreationResponse, error) {
+func (r *AzurePatResource) createPat(_ context.Context, patName string, patScopes string, azureDevopsPatEndpoint string, token string) (*PatCreationResponse, error) {
 
 	now := time.Now()
 	expiration := now.AddDate(1, 0, 0)
@@ -284,7 +340,7 @@ func (r *AzurePatResource) Create(ctx context.Context, req resource.CreateReques
 	var accessToken string
 	var err error
 	if data.IsAppRegistrationPublic.ValueBool() {
-		accessToken, err = r.getPublicAdToken(ctx, data.AppClientID.ValueString(), data.AzureDevopsUser.ValueString(), data.AzureDevopsPassword.ValueString(), data.Authority.ValueString(), AZ_SCOPE_DEVOPS)
+		accessToken, err = r.getPublicAdToken(ctx, data.AppClientID.ValueString(), data.AzureDevopsUser.ValueString(), data.AzureDevopsPassword.ValueString(), data.Authority.ValueString(), AZ_SCOPE_DEVOPS, data.SwitchPrivatePublic.ValueBool(), data.SwitchPrivatePublicWait.ValueInt64())
 	} else {
 		if data.AppClientSecret.IsNull() || data.AppClientSecret.IsUnknown() {
 			resp.Diagnostics.AddError("Client Error", "PAT creation: You need to set app_client_secret if is_app_registration_public=false")
@@ -347,7 +403,7 @@ func (r *AzurePatResource) Delete(ctx context.Context, req resource.DeleteReques
 		var accessToken string
 		var err error
 		if data.IsAppRegistrationPublic.ValueBool() {
-			accessToken, err = r.getPublicAdToken(ctx, data.AppClientID.ValueString(), data.AzureDevopsUser.ValueString(), data.AzureDevopsPassword.ValueString(), data.Authority.ValueString(), AZ_SCOPE_DEVOPS)
+			accessToken, err = r.getPublicAdToken(ctx, data.AppClientID.ValueString(), data.AzureDevopsUser.ValueString(), data.AzureDevopsPassword.ValueString(), data.Authority.ValueString(), AZ_SCOPE_DEVOPS, data.SwitchPrivatePublic.ValueBool(), data.SwitchPrivatePublicWait.ValueInt64())
 		} else {
 			if data.AppClientSecret.IsNull() || data.AppClientSecret.IsUnknown() {
 				resp.Diagnostics.AddError("Client Error", "PAT deletion: You need to set app_client_secret if is_app_registration_public=false")

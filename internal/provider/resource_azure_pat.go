@@ -30,7 +30,7 @@ const (
 	AZ_SCOPE_DEVOPS                    string = "499b84ac-1321-427f-aa17-267ca6975798/.default"
 	PAT_API_VERSION                    string = "api-version=7.0-preview.1"
 	APP_API_ENDPOINT                   string = "https://graph.microsoft.com/v1.0/applications"
-	SWITCH_PRIVATE_PUBLIC_DEFAULT_WAIT int64  = 15
+	SWITCH_PRIVATE_PUBLIC_DEFAULT_WAIT int64  = 7
 )
 
 // Ensure provider defined types fully satisfy framework interfaces
@@ -141,7 +141,7 @@ func (r *AzurePatResource) Schema(ctx context.Context, req resource.SchemaReques
 				PlanModifiers: []planmodifier.Bool{boolplanmodifier.UseStateForUnknown()},
 			},
 			"az_cli_switch_private_app_public_wait_delay": schema.Int64Attribute{
-				MarkdownDescription: "When 'az_cli_switch_private_app_public = true' delay to wait for change propagation before acquiring token, (default: 15)",
+				MarkdownDescription: "When 'az_cli_switch_private_app_public = true' delay to wait for change propagation before acquiring token, (default: 7)",
 				Optional:            true,
 				PlanModifiers:       []planmodifier.Int64{int64planmodifier.UseStateForUnknown()},
 			},
